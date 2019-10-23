@@ -17,6 +17,8 @@ import csv
 import sys
 import re
 import time
+import pathlib
+import field_funcs as ff
 
 # Logging disabled by default
 # logging.basicConfig(filename=time.strftime("%B_%d_%Y_%I.%M.%S_%p_Grabby_Log.txt"), level=logging.DEBUG, format='%(asctime)s:%(levelname)s:%(message)s')
@@ -36,11 +38,14 @@ def phone_discovery():
 
     # The following line defines the directory where the AXL files are located, it assumes the directory is in the same
     # folder as the program
-    schema_dir = os.path.dirname(os.path.abspath(__file__))
+    # schema_dir = os.path.dirname(os.path.abspath(__file__))
+    schema_dir = pathlib.Path(__file__).parent
 
     # Building the AXL schema path
-    axl_schema = f"{schema_dir}\\11.0\\AXLAPI.wsdl"
-    ris_schema_path = f"{schema_dir}\\RISService70.xml"
+    # axl_schema = f"{schema_dir}\\11.0\\AXLAPI.wsdl"
+    axl_schema = (schema_dir / '11.0'/ 'AXLAPI.wsdl').absolute().as_uri()
+    # ris_schema_path = f"{schema_dir}\\RISService70.xml"
+    ris_schema_path = (schema_dir / 'RISService70.xml').absolute().as_uri()
 
     # Ask the user a buncha questions about cluster access.
     host_choice = input("Please enter the FQDN of a CUCM Publisher or Subscriber: ")
@@ -188,7 +193,7 @@ fieldnames = [
 'CallManager2',
 'CallManager3',
 'CallManager4',
-'CallManager5'
+'CallManager5',
 'VLANId',
 'AdminVLANId',
 'CDPNeighborDeviceId',
@@ -197,9 +202,14 @@ fieldnames = [
 'LLDPNeighborDeviceId',
 'LLDPNeighborIP',
 'LLDPNeighborPort',
+'LastITLMessage',
+'LastStatusError',
+'LastRestartReason',
 'PortSpeed',
+'PortErrors',
+'PcPortSpeed',
+'PcPortErrors'
 ]
-
 
 
 csvfile = open('Results.csv', 'w')
@@ -239,8 +249,8 @@ def parse_xml(net_port_keys, device_keys, net):
     else:
         raise SystemExit("No device configuration returned")
 
-    # Write results of dictionary to CSV
-    writer.writerow(device_network_dict)
+    return device_network_dict
+
 
 def do_phone(ip):
     try:
@@ -258,29 +268,51 @@ def do_phone(ip):
         except:
             print("Couldn't get device info configuration.")
 
+        try:
+            # Get data from Access Port page (if present)
+            pc_port_keys = xmltodict.parse(requests.get('http://' + ip + '/PortInformationX?2', timeout=2).text)
+        except:
+            pc_port_keys = {}
+            print("Couldn't get access port data")
+        try:
+            # Get data from Status Messages page
+            status_keys = xmltodict.parse(requests.get('http://' + ip + '/DeviceLogX?1', timeout=2).text)
+        except:
+            status_keys = {}
+            print("Couldn't get status messages")
+
+        try:
+            # Get data from Debug display page
+            debug_keys = xmltodict.parse(requests.get('http://' + ip + '/DeviceLogX?0', timeout=2).text)
+        except:
+            debug_keys = {}
+            print("Couldn't debug display messages")
+
         # Check for existence
         if net_config_data['NetworkConfiguration']:
             # Define a new xmltodict object named net and containing the ordered dict of networkconfiguration 'node'
             net = net_config_data['NetworkConfiguration']
 
             # If Alternate FTP selected by user then print this.
-            if input_option == "1":
-                if net.get('AltTFTP') == 'Yes':
-                    # print("Working on phone ", str(ip))
-                    parse_xml(net_port_keys, device_keys, net)
-            # return all devices
+            if input_option == "1" and net.get('AltTFTP') != 'Yes':
+                return
             else:
                 # Call the parse xml function
-                parse_xml(net_port_keys, device_keys, net)
-                # print("Working on phone ", str(ip))
+                device_network_dict = parse_xml(net_port_keys, device_keys, net)
+                device_network_dict['LastStatusError'] = ff.parse_status_error(status_keys)
+                device_network_dict['LastITLMessage'] = ff.parse_status_itl(status_keys)
+                device_network_dict['LastRestartReason'] = ff.parse_debug_reason(debug_keys)
+                device_network_dict['PortErrors'] = ff.parse_port_errors(net_port_keys)
+                device_network_dict['PcPortErrors'] = ff.parse_port_errors(pc_port_keys)
+                device_network_dict['PcPortSpeed'] = ff.parse_pc_port_speed(pc_port_keys)
+                writer.writerow(device_network_dict)
         else:
             raise SystemExit("No network configuration returned")
 
-
     except:
-            no_web_access_set.add(ip)
-            print("Couldn't get network configuration for device {}.".format(ip))
-
+        no_web_access_set.add(ip)
+        print("Couldn't get network configuration for device {}.".format(ip))
+        
 # Create Logging file
 
 
@@ -348,4 +380,4 @@ print("")
 print("This operation took {} seconds.".format(round(end_phone_discover_timer - startdevicediscovery, 9)))
 
 time.sleep(10)
-sys.exit
+sys.exit(0)
